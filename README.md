@@ -6,7 +6,7 @@ A small native Windows overlay showing which apps use your GPU. White text on a 
 
 ## Download and run
 
-Download `GpuDock.exe` from the [**v1.1 release**](https://github.com/hkf57/gpu-dock/releases/tag/v1.1), save it in a permanent folder, and run it. Windows x64 and .NET Framework 4.8 are required. GPU performance counters must be available. The executable is unsigned.
+Download `GpuDock.exe` from the [**v1.1.1 release**](https://github.com/hkf57/gpu-dock/releases/tag/v1.1.1), save it in a permanent folder, and run it. Windows x64 and .NET Framework 4.8 are required. GPU performance counters must be available. The executable is unsigned.
 
 Only the executable is needed to run the app; its icon is embedded. Startup is optional and can be enabled from the tray menu.
 
@@ -16,7 +16,7 @@ Run `GpuDock.exe`. Only one copy runs at a time. Right-click the GPU Dock tray i
 
 - **Adjust layout:** drag the panel, then double-click it to finish. Normal click-through behavior returns automatically.
 - **GPU:** an NVIDIA adapter is selected when available, otherwise the first detected hardware adapter. Choose another adapter from the tray menu.
-- **Show free % row:** toggle a bottom row showing unused GPU activity capacity and free dedicated VRAM as percentages. Enabled by default; the choice is saved.
+- **Show free % row:** toggle a bottom row showing unused GPU activity capacity and free dedicated VRAM as percentages. A subtle divider separates it from app rows; both hide together. Enabled by default; the choice is saved.
 - **Visible apps / Text size / Monitor:** adjust the panel to suit your screen.
 - **Hide panel:** manually hide it while keeping the tray controls available.
 - **Start with Windows:** enable or disable startup for the current Windows user.

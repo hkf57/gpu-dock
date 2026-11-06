@@ -12,8 +12,8 @@ using System.Threading;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.1.0")]
 
 namespace GpuDock {
 public class Settings {
@@ -226,6 +226,7 @@ public class Dock : Form {
   }
   if(status.Length>0) {Draw(g,status,font,new RectangleF(4,y,size.Width-8,height),false);y+=(int)height;}
   if(free!=null) {
+   using(var divider=new Pen(Color.FromArgb(100,245,245,245),1)) g.DrawLine(divider,4,y,size.Width-4,y);
    Draw(g,"Free",font,new RectangleF(4,y,size.Width*0.56f,height),false);
    Draw(g,FreeMetrics.Format(free.FreeUsage),font,new RectangleF(size.Width*0.56f,y,size.Width*0.17f,height),true);
    Draw(g,FreeMetrics.Format(free.FreeMemory),font,new RectangleF(size.Width*0.73f,y,size.Width*0.27f-4,height),true);

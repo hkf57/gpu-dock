@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1
+
+- Add a subtle divider above the Free row, visible only while that row is enabled.
+
 ## v1.1
 
 - Add a toggleable bottom Free row for unused GPU activity capacity and free dedicated VRAM, both as percentages.
