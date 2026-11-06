@@ -1,0 +1,3 @@
+Generated with the built-in imagegen tool, then converted to a multi-resolution ICO.
+
+Use case: logo-brand. Create a single Windows desktop utility app icon for GPU Dock, a GPU activity monitor. A bold simple white microchip outline enclosing three ascending green activity bars, on a charcoal rounded-square tile. Flat precise modern icon, strong silhouette readable at 16x16 pixels, very few details, no text, no letters, no NVIDIA logo, no shadows outside tile. Centered square composition, tile occupies 92 percent of image. Transparent background outside the rounded tile. This is a production app icon, not a presentation mockup.

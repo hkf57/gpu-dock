@@ -1,0 +1,9 @@
+*.exe
+*.zip
+*.log
+settings.xml
+diagnostics.txt
+checks.txt
+ui-checks.txt
+startup-check.json
+.vs/
