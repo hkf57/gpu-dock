@@ -6,7 +6,7 @@ A small native Windows overlay showing which apps use your GPU. White text on a 
 
 ## Download and run
 
-Download `GpuDock.exe` from the [**v0.1 release**](https://github.com/hkf57/gpu-dock/releases/tag/v0.1), save it in a permanent folder, and run it. Windows x64 and .NET Framework 4.8 are required. GPU performance counters must be available. The executable is unsigned.
+Download `GpuDock.exe` from the [**v1.1 release**](https://github.com/hkf57/gpu-dock/releases/tag/v1.1), save it in a permanent folder, and run it. Windows x64 and .NET Framework 4.8 are required. GPU performance counters must be available. The executable is unsigned.
 
 Only the executable is needed to run the app; its icon is embedded. Startup is optional and can be enabled from the tray menu.
 
@@ -16,12 +16,15 @@ Run `GpuDock.exe`. Only one copy runs at a time. Right-click the GPU Dock tray i
 
 - **Adjust layout:** drag the panel, then double-click it to finish. Normal click-through behavior returns automatically.
 - **GPU:** an NVIDIA adapter is selected when available, otherwise the first detected hardware adapter. Choose another adapter from the tray menu.
+- **Show free % row:** toggle a bottom row showing unused GPU activity capacity and free dedicated VRAM as percentages. Enabled by default; the choice is saved.
 - **Visible apps / Text size / Monitor:** adjust the panel to suit your screen.
 - **Hide panel:** manually hide it while keeping the tray controls available.
 - **Start with Windows:** enable or disable startup for the current Windows user.
 - **Exit:** stop the utility.
 
 Each row shows app name, smoothed GPU activity, and dedicated GPU memory. Up to three rows appear by default. Processes sharing an executable name are grouped. Apps with at least 0.3% smoothed activity or 64 MiB of dedicated allocations qualify. Updates arrive approximately every 1.5 seconds, slowing to 5 seconds while hidden.
+
+The optional bottom row reads **Free | GPU % | VRAM %**. GPU free is 100 minus the selected adapter's smoothed busiest-engine utilization, after combining all processes on each engine. It is an activity estimate, not a promise of extra workload throughput. VRAM free is `(dedicated capacity − adapter-wide dedicated usage) / dedicated capacity × 100`, using DXGI capacity and Windows adapter memory counters. Neither figure is calculated by adding the displayed app rows. Missing or invalid data displays a dash; integrated adapters without dedicated capacity cannot report a dedicated-VRAM percentage.
 
 ## Gaming
 
@@ -52,6 +55,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\source\build.ps1
 Exit the running app before rebuilding. Uses the Windows .NET Framework C# compiler, WinForms, DXGI adapter discovery, and Windows GPU performance counters; no extra SDK or NuGet packages are required.
 
 The included `source\verify-ui.ps1` opens a temporary test window to verify click-through, fullscreen hiding, and restoration. It writes the results to `ui-checks.txt` locally. Run it while GPU Dock is running; it temporarily changes foreground focus. `--diagnose <output.txt>` captures live GPU readings; `--self-test <output.txt>` checks fullscreen bounds and game-path classification.
+
+After building and exiting any running copy, `source\verify-free-row.ps1` checks the actual tray toggle, settings persistence, and panel resizing. It restores the original settings afterward.
 
 ## Icon
 

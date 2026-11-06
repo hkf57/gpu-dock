@@ -12,11 +12,15 @@ using System.Threading;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+
 namespace GpuDock {
 public class Settings {
  public int Right = 24, Top = 68, Rows = 3, Monitor = 0;
  public float FontSize = 14;
  public bool AutoHide = true;
+ public bool ShowFree = true;
  public string Adapter = "";
  public string AdapterName = "";
  public List<string> Games = new List<string>();
@@ -24,7 +28,7 @@ public class Settings {
  public static Settings Load() { try { using(var f=File.OpenRead(Path.Combine(Folder,"settings.xml"))) return (Settings)new XmlSerializer(typeof(Settings)).Deserialize(f); } catch { return new Settings(); } }
  public void Save() { Directory.CreateDirectory(Folder); using(var f=File.Create(Path.Combine(Folder,"settings.xml"))) new XmlSerializer(typeof(Settings)).Serialize(f,this); }
 }
-public class Adapter { public string Name, Luid; public override string ToString() { return Name; } }
+public class Adapter { public string Name, Luid; public double DedicatedBytes; public override string ToString() { return Name; } }
 public static class Native {
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Desc {
@@ -41,7 +45,7 @@ public static class Native {
    var enumerate=(EnumAdapters)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(factory),12*IntPtr.Size),typeof(EnumAdapters));
    for(uint i=0;i<16;i++) { IntPtr a; if(enumerate(factory,i,out a)!=0) break; try {
     var get=(GetDesc)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(a),10*IntPtr.Size),typeof(GetDesc)); Desc d;
-    if(get(a,out d)==0 && (d.Flags&2)==0) result.Add(new Adapter {Name=d.Description,Luid=String.Format("luid_0x{0:x8}_0x{1:x8}",d.High,d.Low)});
+    if(get(a,out d)==0 && (d.Flags&2)==0) result.Add(new Adapter {Name=d.Description,DedicatedBytes=d.DedicatedVideo.ToUInt64(),Luid=String.Format("luid_0x{0:x8}_0x{1:x8}",d.High,d.Low)});
    } finally { Marshal.Release(a); } }
   } catch {} finally { if(factory!=IntPtr.Zero) Marshal.Release(factory); } return result;
  }
@@ -87,12 +91,26 @@ public static class Native {
  }
 }
 public class Row { public string Name; public double Usage, Memory; public bool MemoryValid=true; public Dictionary<string,double> Engines=new Dictionary<string,double>(); }
-public class Snapshot { public List<Row> Rows=new List<Row>(); public string Error=""; public DateTime Time=DateTime.Now; }
+public class Snapshot { public string Adapter=""; public double FreeUsage=Double.NaN, FreeMemory=Double.NaN; public List<Row> Rows=new List<Row>(); public string Error=""; public DateTime Time=DateTime.Now; }
+public static class FreeMetrics {
+ public static double Memory(double used,double capacity) {return capacity>0 && used>=0 && used<=capacity ? 100*(1-used/capacity) : Double.NaN;}
+ public static double Usage(IEnumerable<double> engineTotals) {return engineTotals.Any()?100-Math.Max(0,Math.Min(100,engineTotals.Max())):Double.NaN;}
+ public static string Format(double value) {return Double.IsNaN(value)||Double.IsInfinity(value)?"—":value.ToString("0")+" %";}
+ public static bool Test() {
+  var serializer=new XmlSerializer(typeof(Settings));
+  var old=(Settings)serializer.Deserialize(new StringReader("<Settings><Rows>3</Rows></Settings>"));
+  var text=new StringWriter();serializer.Serialize(text,new Settings{ShowFree=false});
+  var saved=(Settings)serializer.Deserialize(new StringReader(text.ToString()));
+  return old.ShowFree&&!saved.ShowFree&&Memory(3,12)==75&&Memory(12,12)==0&&Memory(0,12)==100&&Double.IsNaN(Memory(1,0))&&Double.IsNaN(Memory(13,12))&&Usage(new[]{30.0+25,40})==45&&Usage(new[]{120.0})==0&&Double.IsNaN(Usage(new double[0]));
+ }
+}
 public class Sampler {
  Dictionary<string,CounterSample> previous=new Dictionary<string,CounterSample>();
  Dictionary<string,double> smoothing=new Dictionary<string,double>();
  static Regex pidPattern=new Regex(@"pid_(\d+)_",RegexOptions.Compiled|RegexOptions.IgnoreCase);
  public string Adapter="";
+ string lastAdapter=null; double lastUsage=Double.NaN;
+ readonly List<Adapter> adapters=Native.Adapters();
  public Snapshot Read() {
   var snapshot=new Snapshot(); var groups=new Dictionary<string,Row>(); var names=new Dictionary<int,string>();
   Func<string,Row> rowFor=delegate(string instance) {
@@ -101,7 +119,9 @@ public class Sampler {
    Row row; if(!groups.TryGetValue(name,out row)) { row=new Row{Name=name}; groups[name]=row; } return row;
   };
   try {
-   string filter=Adapter;
+   string filter=Adapter; snapshot.Adapter=filter;
+   if(filter!=lastAdapter) {previous.Clear();smoothing.Clear();lastUsage=Double.NaN;lastAdapter=filter;}
+   var engineTotals=new Dictionary<string,double>();
    var engineData=new PerformanceCounterCategory("GPU Engine").ReadCategory()["Utilization Percentage"];
    var current=new Dictionary<string,CounterSample>();
    foreach(InstanceData entry in engineData.Values) {
@@ -110,19 +130,24 @@ public class Sampler {
     if(!previous.TryGetValue(key,out old)) continue;
     double value=Math.Max(0,Math.Min(100,CounterSample.Calculate(old,entry.Sample)));
     if(Double.IsNaN(value)||Double.IsInfinity(value)) continue;
-    Row row=rowFor(key); if(row==null) continue;
     string engine=Regex.Replace(key,@"^pid_\d+_",""); double total;
+    engineTotals.TryGetValue(engine,out total);engineTotals[engine]=total+value;
+    Row row=rowFor(key); if(row==null) continue;
     row.Engines.TryGetValue(engine,out total); row.Engines[engine]=total+value;
    }
    previous=current;
+   double free=FreeMetrics.Usage(engineTotals.Values);
+   if(!Double.IsNaN(free)) {double used=100-free;lastUsage=Double.IsNaN(lastUsage)?used:0.45*used+0.55*lastUsage;snapshot.FreeUsage=100-lastUsage;}
    var memory=new PerformanceCounterCategory("GPU Process Memory").ReadCategory()["Dedicated Usage"];
    foreach(InstanceData entry in memory.Values) {
     string key=entry.InstanceName.ToLowerInvariant(); if(filter.Length>0&&!key.Contains(filter)) continue;
     Row row=rowFor(key); if(row!=null) row.Memory+=Math.Max(0,entry.Sample.RawValue);
    }
-   double adapterUsed=0;
+   double adapterUsed=0; bool memoryFound=false;
    var totals=new PerformanceCounterCategory("GPU Adapter Memory").ReadCategory()["Dedicated Usage"];
-   foreach(InstanceData entry in totals.Values) if(filter.Length==0||entry.InstanceName.ToLowerInvariant().Contains(filter)) adapterUsed+=Math.Max(0,entry.Sample.RawValue);
+   foreach(InstanceData entry in totals.Values) if(filter.Length==0||entry.InstanceName.ToLowerInvariant().Contains(filter)) {adapterUsed+=Math.Max(0,entry.Sample.RawValue);memoryFound=true;}
+   var selected=adapters.FirstOrDefault(a=>a.Luid==filter);
+   if(memoryFound&&selected!=null) snapshot.FreeMemory=FreeMetrics.Memory(adapterUsed,selected.DedicatedBytes);
    foreach(var row in groups.Values) if(row.Memory>adapterUsed+64*1024*1024) {row.MemoryValid=false;row.Memory=0;}
    var nextSmooth=new Dictionary<string,double>();
    foreach(var row in groups.Values) {
@@ -132,7 +157,7 @@ public class Sampler {
    }
    smoothing=nextSmooth;
    snapshot.Rows=groups.Values.Where(r=>r.Usage>=0.3 || r.Memory>=64*1024*1024).OrderByDescending(r=>Math.Round(r.Usage/2)).ThenByDescending(r=>r.Memory).ToList();
-  } catch(Exception e) { snapshot.Error=e.Message; }
+  } catch(Exception e) { snapshot.Error=e.Message; snapshot.FreeUsage=Double.NaN;snapshot.FreeMemory=Double.NaN; }
   return snapshot;
  }
 }
@@ -157,7 +182,7 @@ public class Dock : Form {
 
  protected override bool ShowWithoutActivation {get{return true;}}
  protected override CreateParams CreateParams { get { var p=base.CreateParams; p.ExStyle|=0x08000000|0x80|0x80000; if(!adjusting) p.ExStyle|=0x20; return p; } }
- void SetFont() { if(textFont!=null) textFont.Dispose(); textFont=new Font("Segoe UI",settings.FontSize,FontStyle.Bold,GraphicsUnit.Point); Size=new Size((int)(settings.FontSize*34),(int)(settings.FontSize*2.2)*(settings.Rows+1)); }
+ void SetFont() { if(textFont!=null) textFont.Dispose(); textFont=new Font("Segoe UI",settings.FontSize,FontStyle.Bold,GraphicsUnit.Point); Size=new Size((int)(settings.FontSize*34),(int)(settings.FontSize*2.2)*(settings.Rows+1+(settings.ShowFree?1:0))); }
  void Position() { var screens=Screen.AllScreens; int m=Math.Max(0,Math.Min(screens.Length-1,settings.Monitor)); var b=screens[m].WorkingArea; Location=new Point(Math.Max(b.Left,b.Right-settings.Right-Width),Math.Max(b.Top,Math.Min(b.Bottom-Height,b.Top+settings.Top))); }
  void SavePosition() { var screen=Screen.FromControl(this); settings.Monitor=Array.IndexOf(Screen.AllScreens,screen); settings.Right=Math.Max(0,screen.WorkingArea.Right-Right); settings.Top=Math.Max(0,Top-screen.WorkingArea.Top); settings.Save(); }
  void SetAdjusting(bool value) { adjusting=value; BackColor=value?Color.FromArgb(28,31,36):Color.Fuchsia; int style=Native.GetWindowLong(Handle,-20); Native.SetWindowLong(Handle,-20,value?style&~0x20:style|0x20); if(!value) SavePosition(); CheckVisibility(); Render(); BuildMenu(); }
@@ -167,6 +192,8 @@ public class Dock : Form {
   menu.Items.Add("Adjust layout (drag; double-click to finish)",null,delegate { SetAdjusting(!adjusting); });
   menu.Items.Add(paused?"Show panel":"Hide panel",null,delegate { paused=!paused; CheckVisibility(); BuildMenu(); });
   var auto=new ToolStripMenuItem("Hide for games / fullscreen apps") {Checked=settings.AutoHide}; auto.Click+=delegate {settings.AutoHide=!settings.AutoHide;settings.Save();BuildMenu();}; menu.Items.Add(auto);
+  var freeRow=new ToolStripMenuItem("Show free % row") {Checked=settings.ShowFree};
+  freeRow.Click+=delegate {settings.ShowFree=!settings.ShowFree;SetFont();Position();settings.Save();Render();BuildMenu();};menu.Items.Add(freeRow);
   var gpu=new ToolStripMenuItem("GPU");
   foreach(var a in adapters) { var captured=a; var item=new ToolStripMenuItem(a.Name){Checked=settings.Adapter==a.Luid}; item.Click+=delegate { settings.Adapter=captured.Luid; settings.AdapterName=captured.Name; sampler.Adapter=captured.Luid; snapshot=new Snapshot(); settings.Save(); BuildMenu(); Collect();}; gpu.DropDownItems.Add(item); } menu.Items.Add(gpu);
   var rows=new ToolStripMenuItem("Visible apps"); foreach(int n in new[]{3,5,8}) { int count=n; var item=new ToolStripMenuItem(n.ToString()){Checked=settings.Rows==n}; item.Click+=delegate {settings.Rows=count;SetFont();Position();settings.Save();BuildMenu();};rows.DropDownItems.Add(item); } menu.Items.Add(rows);
@@ -180,7 +207,7 @@ public class Dock : Form {
  }
  static bool StartupEnabled() { using(var k=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) return k!=null&&k.GetValue("GpuDock")!=null; }
  static void SetStartup(bool enabled) {using(var k=Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")){if(enabled)k.SetValue("GpuDock","\""+Application.ExecutablePath+"\"");else k.DeleteValue("GpuDock",false);}}
- void Collect() { if(Interlocked.Exchange(ref reading,1)!=0)return; ThreadPool.QueueUserWorkItem(delegate { var next=sampler.Read(); try { if(!IsDisposed&&IsHandleCreated) BeginInvoke((Action)delegate {snapshot=next;Render();}); } catch(InvalidOperationException) {} finally {Interlocked.Exchange(ref reading,0);} }); }
+ void Collect() { if(Interlocked.Exchange(ref reading,1)!=0)return; ThreadPool.QueueUserWorkItem(delegate { var next=sampler.Read(); try { if(!IsDisposed&&IsHandleCreated) BeginInvoke((Action)delegate {if(next.Adapter==settings.Adapter) {snapshot=next;Render();}}); } catch(InvalidOperationException) {} finally {Interlocked.Exchange(ref reading,0);} }); }
  void CheckVisibility() {
   hidden=Native.HideReason(settings); bool hide=paused || (!adjusting&&hidden.Length>0);
   sampleTimer.Interval=hide?5000:1500;
@@ -188,7 +215,7 @@ public class Dock : Form {
   else if(DateTime.Now>=showAfter&&!Visible) Show();
  }
  public static string Friendly(string name) { switch(name.ToLowerInvariant()) {case "vmwp":return "Virtual machine";case "vmmem":case "vmmemwsl":return "WSL / virtual machine";case "dwm":return "Desktop compositor";case "csrss":return "Windows session";case "wallpaper64":case "wallpaper32":return "Wallpaper Engine";default:return name.Length>0?char.ToUpper(name[0])+name.Substring(1):name;} }
- public static void PaintRows(Graphics g,Size size,Font font,IEnumerable<Row> rows,string status,bool adjust) {
+ public static void PaintRows(Graphics g,Size size,Font font,IEnumerable<Row> rows,string status,bool adjust,Snapshot free=null) {
   g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
   float height=font.SizeInPoints*2.2f; int y=0;
   foreach(var row in rows) {
@@ -197,23 +224,28 @@ public class Dock : Form {
    Draw(g,row.Usage.ToString("0")+" %",font,new RectangleF(size.Width*0.56f,y,size.Width*0.17f,height),true);
    Draw(g,mem,font,new RectangleF(size.Width*0.73f,y,size.Width*0.27f-4,height),true); y+=(int)height;
   }
-  if(status.Length>0)Draw(g,status,font,new RectangleF(4,y,size.Width-8,height),false);
+  if(status.Length>0) {Draw(g,status,font,new RectangleF(4,y,size.Width-8,height),false);y+=(int)height;}
+  if(free!=null) {
+   Draw(g,"Free",font,new RectangleF(4,y,size.Width*0.56f,height),false);
+   Draw(g,FreeMetrics.Format(free.FreeUsage),font,new RectangleF(size.Width*0.56f,y,size.Width*0.17f,height),true);
+   Draw(g,FreeMetrics.Format(free.FreeMemory),font,new RectangleF(size.Width*0.73f,y,size.Width*0.27f-4,height),true);
+  }
   if(adjust) { using(var pen=new Pen(Color.FromArgb(110,190,160)))g.DrawRectangle(pen,0,0,size.Width-1,size.Height-1);using(var f=new Font("Segoe UI",9))Draw(g,"Drag to move · double-click to finish",f,new RectangleF(5,size.Height-22,size.Width-10,20),false); }
  }
  static void Draw(Graphics g,string text,Font font,RectangleF rect,bool right) { using(var format=new StringFormat{Alignment=right?StringAlignment.Far:StringAlignment.Near,LineAlignment=StringAlignment.Center,Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap}) {var shadow=rect;shadow.Offset(1,1);g.DrawString(text,font,Brushes.Black,shadow,format);g.DrawString(text,font,Brushes.WhiteSmoke,rect,format);} }
  protected override void OnPaintBackground(PaintEventArgs e) {}
  protected override void OnPaint(PaintEventArgs e) {Render();}
- void Render() {if(!IsHandleCreated||IsDisposed)return; string status=snapshot.Error.Length>0?"GPU readings unavailable":snapshot.Rows.Count==0?"GPU idle":"";using(var bitmap=new Bitmap(Width,Height,System.Drawing.Imaging.PixelFormat.Format32bppArgb)) using(var g=Graphics.FromImage(bitmap)) {g.Clear(adjusting?Color.FromArgb(235,28,31,36):Color.Transparent);PaintRows(g,ClientSize,textFont,snapshot.Rows.Take(settings.Rows),status,adjusting);Native.Present(Handle,Location,bitmap);} }
+ void Render() {if(!IsHandleCreated||IsDisposed)return; string status=snapshot.Error.Length>0?"GPU readings unavailable":snapshot.Rows.Count==0?"GPU idle":"";using(var bitmap=new Bitmap(Width,Height,System.Drawing.Imaging.PixelFormat.Format32bppArgb)) using(var g=Graphics.FromImage(bitmap)) {g.Clear(adjusting?Color.FromArgb(235,28,31,36):Color.Transparent);PaintRows(g,ClientSize,textFont,snapshot.Rows.Take(settings.Rows),status,adjusting,settings.ShowFree?snapshot:null);Native.Present(Handle,Location,bitmap);} }
  void SaveDiagnostics() { Directory.CreateDirectory(Settings.Folder);File.WriteAllText(Path.Combine(Settings.Folder,"diagnostics.txt"),Program.Describe(snapshot,adapters)+"\nHidden: "+hidden+"\nClick-through: "+(!adjusting)+"\nBounds: "+Bounds);Process.Start("notepad.exe",Path.Combine(Settings.Folder,"diagnostics.txt")); }
  protected override void WndProc(ref Message m) {if(m.Msg==0x312&&m.WParam.ToInt32()==1){string exe=Native.ForegroundExe();if(exe.Length>0&&!exe.Equals(Application.ExecutablePath,StringComparison.OrdinalIgnoreCase)){if(settings.Games.Contains(exe,StringComparer.OrdinalIgnoreCase))settings.Games.RemoveAll(p=>p.Equals(exe,StringComparison.OrdinalIgnoreCase));else settings.Games.Add(exe);settings.Save();BuildMenu();}}base.WndProc(ref m);}
  protected override void OnFormClosed(FormClosedEventArgs e) {visibilityTimer.Stop();sampleTimer.Stop();Native.UnregisterHotKey(Handle,1);tray.Visible=false;tray.Dispose();textFont.Dispose();base.OnFormClosed(e);}
 }
 public static class Program {
- public static string Describe(Snapshot s,List<Adapter> adapters) {return "GPU Dock | "+s.Time.ToString("O")+"\n"+String.Join("\n",adapters.Select(a=>a.Name+" | "+a.Luid))+"\nError: "+s.Error+"\n"+String.Join("\n",s.Rows.Select(r=>r.Name+" | "+r.Usage.ToString("F2")+" % | "+(r.MemoryValid?(r.Memory/(1024*1024)).ToString("F1")+" MiB":"unavailable (counter exceeds adapter usage)")));}
+ public static string Describe(Snapshot s,List<Adapter> adapters) {return "GPU Dock | "+s.Time.ToString("O")+"\n"+String.Join("\n",adapters.Select(a=>a.Name+" | "+a.Luid))+"\nFree GPU: "+FreeMetrics.Format(s.FreeUsage)+" | Free VRAM: "+FreeMetrics.Format(s.FreeMemory)+"\nError: "+s.Error+"\n"+String.Join("\n",s.Rows.Select(r=>r.Name+" | "+r.Usage.ToString("F2")+" % | "+(r.MemoryValid?(r.Memory/(1024*1024)).ToString("F1")+" MiB":"unavailable (counter exceeds adapter usage)")));}
  [STAThread] public static void Main(string[] args) {
   Native.SetProcessDPIAware();Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
   if(args.Length>0&&args[0]=="--diagnose") { var adapters=Native.Adapters();var sampler=new Sampler {Adapter=(adapters.FirstOrDefault(a=>a.Name.Contains("NVIDIA"))??new Adapter{Luid=""}).Luid};sampler.Read();Thread.Sleep(1600);var s=sampler.Read();File.WriteAllText(args[1],Describe(s,adapters));Environment.Exit(s.Error.Length>0?1:0);return; }
-  if(args.Length>0&&args[0]=="--self-test") {bool ok=Native.Covers(new Native.Rect{Left=0,Top=0,Right=1920,Bottom=1080},new Rectangle(0,0,1920,1080))&&!Native.Covers(new Native.Rect{Left=0,Top=0,Right=1920,Bottom=1040},new Rectangle(0,0,1920,1080))&&Native.GamePath(@"D:\SteamLibrary\steamapps\common\Nioh3\game.exe")&&!Native.GamePath(@"C:\Windows\explorer.exe");File.WriteAllText(args[1],ok?"PASS: fullscreen bounds, taskbar exclusion, game path recognition":"FAIL");Environment.Exit(ok?0:1);return;}
+  if(args.Length>0&&args[0]=="--self-test") {bool ok=FreeMetrics.Test()&&Native.Covers(new Native.Rect{Left=0,Top=0,Right=1920,Bottom=1080},new Rectangle(0,0,1920,1080))&&!Native.Covers(new Native.Rect{Left=0,Top=0,Right=1920,Bottom=1040},new Rectangle(0,0,1920,1080))&&Native.GamePath(@"D:\SteamLibrary\steamapps\common\Nioh3\game.exe")&&!Native.GamePath(@"C:\Windows\explorer.exe");File.WriteAllText(args[1],ok?"PASS: free-capacity math, engine aggregation, invalid counters, settings compatibility/persistence, fullscreen bounds, taskbar exclusion, game path recognition":"FAIL");Environment.Exit(ok?0:1);return;}
   if(args.Length>0&&args[0]=="--preview") {using(var b=new Bitmap(408,106))using(var g=Graphics.FromImage(b))using(var f=new Font("Segoe UI",12,FontStyle.Bold)){g.Clear(Color.FromArgb(20,30,38));Dock.PaintRows(g,b.Size,f,new[]{new Row{Name="Local AI",Usage=58,Memory=6.8*1024*1024*1024},new Row{Name="OBS",Usage=14,Memory=0.7*1024*1024*1024},new Row{Name="Chrome",Usage=6,Memory=0.5*1024*1024*1024}},"",false);b.Save(args[1]);}return;}
   bool created;using(var mutex=new Mutex(true,"Local\\Charles.GpuDock",out created)){if(!created)return;try{Application.Run(new Dock(Settings.Load()));}catch(Exception ex){Directory.CreateDirectory(Settings.Folder);File.WriteAllText(Path.Combine(Settings.Folder,"error.txt"),ex.ToString());MessageBox.Show("GPU Dock could not start. Details: "+Path.Combine(Settings.Folder,"error.txt"));}}
  }
